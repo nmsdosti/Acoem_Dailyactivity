@@ -4,8 +4,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
-import { BarChart3, TrendingUp, Clock, Users } from "lucide-react";
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, subWeeks } from "date-fns";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { BarChart3, TrendingUp, Clock, Users, Calendar, Filter } from "lucide-react";
+import { format, startOfWeek, endOfWeek, eachDayOfInterval, subWeeks, isWithinInterval } from "date-fns";
 
 interface Engineer {
   id: string;
@@ -56,45 +59,45 @@ const CATEGORY_COLORS = [
 ];
 
 export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsProps) {
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('current-week');
+  const [startDate, setStartDate] = useState<string>(format(subWeeks(new Date(), 1), 'yyyy-MM-dd'));
+  const [endDate, setEndDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
   const [selectedEngineerForCategory, setSelectedEngineerForCategory] = useState<string>('all');
   const [filteredActivities, setFilteredActivities] = useState<DailyActivity[]>([]);
+  const [excludedCategories, setExcludedCategories] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    filterActivitiesByPeriod();
-  }, [activities, selectedPeriod]);
+    filterActivitiesByDateRange();
+  }, [activities, startDate, endDate]);
 
-  const filterActivitiesByPeriod = () => {
-    const now = new Date();
-    let startDate: Date;
-    let endDate: Date;
-
-    switch (selectedPeriod) {
-      case 'current-week':
-        startDate = startOfWeek(now);
-        endDate = endOfWeek(now);
-        break;
-      case 'last-week':
-        const lastWeek = subWeeks(now, 1);
-        startDate = startOfWeek(lastWeek);
-        endDate = endOfWeek(lastWeek);
-        break;
-      case 'last-30-days':
-        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        endDate = now;
-        break;
-      default:
-        startDate = startOfWeek(now);
-        endDate = endOfWeek(now);
+  const filterActivitiesByDateRange = () => {
+    if (!startDate || !endDate) {
+      setFilteredActivities(activities);
+      return;
     }
 
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
     const filtered = activities.filter(activity => {
       const activityDate = new Date(activity.activity_date);
-      return activityDate >= startDate && activityDate <= endDate;
+      return isWithinInterval(activityDate, { start, end });
     });
 
     setFilteredActivities(filtered);
   };
+
+  // Get all unique service categories for filtering
+  const allCategories = useMemo(() => {
+    const categorySet = new Set<string>();
+    filteredActivities.forEach(activity => {
+      activity.activity_hours?.forEach(ah => {
+        if (ah.service_categories?.name) {
+          categorySet.add(ah.service_categories.name);
+        }
+      });
+    });
+    return Array.from(categorySet).sort();
+  }, [filteredActivities]);
 
   const categoryStats = useMemo((): CategoryStats[] => {
     const categoryMap = new Map<string, number>();
@@ -108,8 +111,10 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
     activitiesToAnalyze.forEach(activity => {
       activity.activity_hours?.forEach(ah => {
         const categoryName = ah.service_categories?.name || 'Unknown';
-        categoryMap.set(categoryName, (categoryMap.get(categoryName) || 0) + ah.hours);
-        totalHours += ah.hours;
+        if (!excludedCategories.has(categoryName)) {
+          categoryMap.set(categoryName, (categoryMap.get(categoryName) || 0) + ah.hours);
+          totalHours += ah.hours;
+        }
       });
     });
 
@@ -122,7 +127,7 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
       }))
       .sort((a, b) => b.totalHours - a.totalHours)
       .slice(0, 10);
-  }, [filteredActivities, selectedEngineerForCategory]);
+  }, [filteredActivities, selectedEngineerForCategory, excludedCategories]);
 
   const engineerPerformance = useMemo((): EngineerPerformance[] => {
     return engineers.map(engineer => {
@@ -130,16 +135,22 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
         activity => activity.engineer?.employee_id === engineer.employee_id
       );
 
-      const totalHours = engineerActivities.reduce((sum, activity) => sum + activity.total_hours, 0);
+      // Filter out excluded categories
+      const totalHours = engineerActivities.reduce((sum, activity) => {
+        const activityHours = activity.activity_hours?.reduce((actSum, ah) => {
+          if (!excludedCategories.has(ah.service_categories?.name || '')) {
+            return actSum + ah.hours;
+          }
+          return actSum;
+        }, 0) || 0;
+        return sum + activityHours;
+      }, 0);
+
       const daysWorked = engineerActivities.length;
       
-      // Calculate weekly average based on the selected period
-      let weeklyAverage = 0;
-      if (selectedPeriod === 'current-week' || selectedPeriod === 'last-week') {
-        weeklyAverage = totalHours;
-      } else if (selectedPeriod === 'last-30-days') {
-        weeklyAverage = (totalHours / 30) * 7;
-      }
+      // Calculate based on date range
+      const daysDiff = Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      const weeklyAverage = (totalHours / daysDiff) * 7;
 
       const completionRate = engineer.weekly_hour_requirement > 0 
         ? Math.min((weeklyAverage / engineer.weekly_hour_requirement) * 100, 100)
@@ -153,7 +164,7 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
         daysWorked
       };
     }).sort((a, b) => b.totalHours - a.totalHours);
-  }, [filteredActivities, engineers, selectedPeriod]);
+  }, [filteredActivities, engineers, startDate, endDate, excludedCategories]);
 
   const overallStats = useMemo(() => {
     const totalHours = filteredActivities.reduce((sum, activity) => sum + activity.total_hours, 0);
@@ -180,33 +191,78 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
     return Math.max(...categoryStats.map(c => c.totalHours), 0) * 1.1;
   }, [categoryStats]);
 
+  const handleCategoryToggle = (categoryName: string, checked: boolean) => {
+    const newExcluded = new Set(excludedCategories);
+    if (checked) {
+      newExcluded.delete(categoryName);
+    } else {
+      newExcluded.add(categoryName);
+    }
+    setExcludedCategories(newExcluded);
+  };
+
   return (
     <div className="space-y-6">
-      {/* Period Selection */}
+      {/* Date Range Selection Card */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <BarChart3 className="h-5 w-5" />
-                Activity Analytics
-              </CardTitle>
-              <CardDescription>
-                Analyze engineer performance and activity patterns
-              </CardDescription>
-            </div>
-            <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select period" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="current-week">Current Week</SelectItem>
-                <SelectItem value="last-week">Last Week</SelectItem>
-                <SelectItem value="last-30-days">Last 30 Days</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Date Range Selection
+          </CardTitle>
+          <CardDescription>
+            Select custom date range for analytics
+          </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div className="space-y-2">
+              <Label htmlFor="start-date">From Date</Label>
+              <Input
+                id="start-date"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="end-date">To Date</Label>
+              <Input
+                id="end-date"
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Quick Select</Label>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const today = new Date();
+                    setStartDate(format(subWeeks(today, 1), 'yyyy-MM-dd'));
+                    setEndDate(format(today, 'yyyy-MM-dd'));
+                  }}
+                >
+                  Last Week
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const today = new Date();
+                    setStartDate(format(new Date(today.getFullYear(), today.getMonth(), 1), 'yyyy-MM-dd'));
+                    setEndDate(format(today, 'yyyy-MM-dd'));
+                  }}
+                >
+                  This Month
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardContent>
       </Card>
 
       {/* Overall Stats */}
@@ -261,81 +317,106 @@ export function ActivityAnalytics({ activities, engineers }: ActivityAnalyticsPr
       </div>
 
       <div className="grid grid-cols-1 gap-6">
-        {/* Engineer Performance Chart */}
+        {/* Engineer Performance Chart - Vertical */}
         <Card>
           <CardHeader>
-            <CardTitle>Engineer Performance - Hours Comparison</CardTitle>
-            <CardDescription>
-              Compare actual hours worked vs required weekly hours
-            </CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Engineer Performance - Hours Comparison</CardTitle>
+                <CardDescription>
+                  Compare actual hours worked vs required weekly hours (vertical view)
+                </CardDescription>
+              </div>
+              <div className="w-64">
+                <Label className="text-xs text-gray-600 mb-1 block">Category Filter</Label>
+                <Select>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Filter categories" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <div className="p-2 space-y-2 max-h-64 overflow-y-auto">
+                      {allCategories.map((category) => (
+                        <div key={category} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={category}
+                            checked={!excludedCategories.has(category)}
+                            onCheckedChange={(checked) => handleCategoryToggle(category, checked as boolean)}
+                          />
+                          <Label htmlFor={category} className="text-sm">
+                            {category}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
               {engineerPerformance.map((performance) => (
                 <div key={performance.engineer.id} className="space-y-2">
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <p className="text-sm font-medium">{performance.engineer.full_name}</p>
-                      <p className="text-xs text-gray-500">{performance.engineer.employee_id}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-medium text-blue-600">{performance.totalHours.toFixed(1)}h worked</p>
-                      <p className="text-xs text-gray-500">{performance.engineer.weekly_hour_requirement}h required</p>
-                    </div>
+                  <div className="text-center">
+                    <p className="text-xs font-medium truncate">{performance.engineer.full_name}</p>
+                    <p className="text-xs text-gray-500">{performance.engineer.employee_id}</p>
                   </div>
                   
-                  <div className="relative h-12 bg-gray-100 rounded-lg overflow-hidden">
+                  <div className="relative h-48 bg-gray-100 rounded-lg overflow-hidden flex flex-col justify-end">
                     {/* Required hours bar (background) */}
                     <div 
-                      className="absolute top-0 left-0 h-full bg-gray-300 opacity-50"
+                      className="absolute bottom-0 left-0 w-full bg-gray-300 opacity-50"
                       style={{ 
-                        width: `${(performance.engineer.weekly_hour_requirement / maxHours) * 100}%` 
+                        height: `${(performance.engineer.weekly_hour_requirement / maxHours) * 100}%` 
                       }}
                     />
                     
                     {/* Actual hours bar */}
                     <div 
-                      className={`absolute top-0 left-0 h-full transition-all ${
+                      className={`absolute bottom-0 left-0 w-full transition-all ${
                         performance.totalHours >= performance.engineer.weekly_hour_requirement 
                           ? 'bg-green-500' 
                           : 'bg-blue-500'
                       }`}
                       style={{ 
-                        width: `${(performance.totalHours / maxHours) * 100}%` 
+                        height: `${(performance.totalHours / maxHours) * 100}%` 
                       }}
                     />
                     
                     {/* Labels */}
-                    <div className="absolute inset-0 flex items-center justify-between px-3">
+                    <div className="absolute inset-0 flex flex-col justify-between items-center p-2 text-center">
                       <span className="text-xs font-medium text-white drop-shadow">
                         {performance.totalHours.toFixed(1)}h
                       </span>
                       {performance.totalHours < performance.engineer.weekly_hour_requirement && (
                         <span className="text-xs font-medium text-gray-600">
-                          {performance.engineer.weekly_hour_requirement}h target
+                          {performance.engineer.weekly_hour_requirement}h
                         </span>
                       )}
                     </div>
                   </div>
                   
-                  <div className="flex items-center gap-4 text-xs text-gray-600">
-                    <div className="flex items-center gap-1">
-                      <div className="w-3 h-3 bg-blue-500 rounded"></div>
-                      <span>Actual Hours</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <div className="w-3 h-3 bg-gray-300 rounded"></div>
-                      <span>Required Hours</span>
-                    </div>
+                  <div className="text-center">
                     <Badge 
                       variant={performance.completionRate >= 100 ? "default" : performance.completionRate >= 80 ? "secondary" : "destructive"}
-                      className="text-xs ml-auto"
+                      className="text-xs"
                     >
-                      {performance.completionRate.toFixed(0)}% Complete
+                      {performance.completionRate.toFixed(0)}%
                     </Badge>
                   </div>
                 </div>
               ))}
+            </div>
+            
+            <div className="flex items-center justify-center gap-6 mt-6 text-xs text-gray-600">
+              <div className="flex items-center gap-1">
+                <div className="w-3 h-3 bg-blue-500 rounded"></div>
+                <span>Actual Hours</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-3 h-3 bg-gray-300 rounded"></div>
+                <span>Required Hours</span>
+              </div>
             </div>
             
             {engineerPerformance.length === 0 && (

@@ -12,11 +12,25 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { CalendarIcon, Clock, Save, Upload, LogOut } from "lucide-react";
+import { CalendarIcon, Clock, Save, Upload, LogOut, Bell } from "lucide-react";
 import { format } from "date-fns";
 import { supabase } from "../../../supabase/supabase";
 import { useAuth } from "../../../supabase/auth";
 import { useToast } from "@/components/ui/use-toast";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface ServiceCategory {
   id: string;
@@ -36,7 +50,15 @@ interface DailyActivity {
   customer_name: string;
   site_location: string;
   notes: string;
+  status: 'planning' | 'executed';
   activity_hours: ActivityHour[];
+}
+
+interface Notification {
+  id: string;
+  message: string;
+  created_at: string;
+  is_read: boolean;
 }
 
 export default function EngineerCalendar() {
@@ -51,10 +73,15 @@ export default function EngineerCalendar() {
     customer_name: "",
     site_location: "",
     notes: "",
+    status: "executed",
     activity_hours: [],
   });
   const [loading, setLoading] = useState(false);
   const [submittedDates, setSubmittedDates] = useState<Set<string>>(new Set());
+  const [planningDates, setPlanningDates] = useState<Set<string>>(new Set());
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const { user, signOut } = useAuth();
   const { toast } = useToast();
@@ -71,6 +98,11 @@ export default function EngineerCalendar() {
       fetchActivityForDate(dateStr);
     }
   }, [selectedDate]);
+
+  useEffect(() => {
+    fetchNotifications();
+    subscribeToNotifications();
+  }, [user]);
 
   const fetchServiceCategories = async () => {
     const { data, error } = await supabase
@@ -114,12 +146,83 @@ export default function EngineerCalendar() {
 
     const { data, error } = await supabase
       .from("daily_activities")
-      .select("activity_date")
+      .select("activity_date, status")
       .eq("engineer_id", engineer.id);
 
     if (!error && data) {
-      setSubmittedDates(new Set(data.map((d) => d.activity_date)));
+      const executed = new Set(data.filter(d => d.status === 'executed').map(d => d.activity_date));
+      const planning = new Set(data.filter(d => d.status === 'planning').map(d => d.activity_date));
+      setSubmittedDates(executed);
+      setPlanningDates(planning);
     }
+  };
+
+  const fetchNotifications = async () => {
+    if (!user) return;
+
+    const { data: engineer } = await supabase
+      .from("engineers")
+      .select("id")
+      .eq("user_id", user.id)
+      .single();
+
+    if (!engineer) return;
+
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("*")
+      .or(`recipient_type.eq.all,and(recipient_type.eq.specific,recipient_engineer_id.eq.${engineer.id})`)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (!error && data) {
+      setNotifications(data);
+      setUnreadCount(data.filter(n => !n.is_read).length);
+    }
+  };
+
+  const subscribeToNotifications = () => {
+    const channel = supabase
+      .channel('notifications')
+      .on('postgres_changes', 
+        { event: 'INSERT', schema: 'public', table: 'notifications' },
+        (payload) => {
+          fetchNotifications();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  };
+
+  const markNotificationAsRead = async (notificationId: string) => {
+    await supabase
+      .from("notifications")
+      .update({ is_read: true })
+      .eq("id", notificationId);
+    
+    fetchNotifications();
+  };
+
+  const markAllAsRead = async () => {
+    if (!user) return;
+
+    const { data: engineer } = await supabase
+      .from("engineers")
+      .select("id")
+      .eq("user_id", user.id)
+      .single();
+
+    if (!engineer) return;
+
+    await supabase
+      .from("notifications")
+      .update({ is_read: true })
+      .or(`recipient_type.eq.all,and(recipient_type.eq.specific,recipient_engineer_id.eq.${engineer.id})`);
+    
+    fetchNotifications();
   };
 
   const fetchActivityForDate = async (date: string) => {
@@ -156,6 +259,7 @@ export default function EngineerCalendar() {
         customer_name: activity.customer_name || "",
         site_location: activity.site_location || "",
         notes: activity.notes || "",
+        status: activity.status || "executed",
         activity_hours: activity.activity_hours || [],
       });
     } else {
@@ -165,6 +269,7 @@ export default function EngineerCalendar() {
         customer_name: "",
         site_location: "",
         notes: "",
+        status: "executed",
         activity_hours: serviceCategories.map((cat) => ({
           service_category_id: cat.id,
           hours: 0,
@@ -226,6 +331,7 @@ export default function EngineerCalendar() {
           customer_name: activityData.customer_name,
           site_location: activityData.site_location,
           notes: activityData.notes,
+          status: activityData.status,
           total_hours: totalHours,
         })
         .select()
@@ -258,7 +364,9 @@ export default function EngineerCalendar() {
 
       toast({
         title: "Success",
-        description: "Activity submitted successfully!",
+        description: activityData.status === 'planning' 
+          ? "Planning activity saved successfully!" 
+          : "Activity submitted successfully!",
       });
       fetchSubmittedDates();
     } catch (error) {
@@ -281,6 +389,10 @@ export default function EngineerCalendar() {
     return submittedDates.has(format(date, "yyyy-MM-dd"));
   };
 
+  const isDatePlanning = (date: Date) => {
+    return planningDates.has(format(date, "yyyy-MM-dd"));
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
       <div className="max-w-7xl mx-auto">
@@ -293,14 +405,29 @@ export default function EngineerCalendar() {
               Select a date and log your daily engineering activities
             </p>
           </div>
-          <Button
-            variant="outline"
-            onClick={handleLogout}
-            className="flex items-center gap-2 border-red-200 text-red-600 hover:bg-red-50"
-          >
-            <LogOut className="h-4 w-4" />
-            Logout
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowNotifications(true)}
+              className="flex items-center gap-2 relative"
+            >
+              <Bell className="h-4 w-4" />
+              Notifications
+              {unreadCount > 0 && (
+                <Badge className="absolute -top-2 -right-2 h-5 w-5 flex items-center justify-center p-0 bg-red-500">
+                  {unreadCount}
+                </Badge>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleLogout}
+              className="flex items-center gap-2 border-red-200 text-red-600 hover:bg-red-50"
+            >
+              <LogOut className="h-4 w-4" />
+              Logout
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -323,15 +450,21 @@ export default function EngineerCalendar() {
                 className="rounded-md border"
                 modifiers={{
                   submitted: (date) => isDateSubmitted(date),
+                  planning: (date) => isDatePlanning(date),
                 }}
                 modifiersStyles={{
                   submitted: { backgroundColor: "#10b981", color: "white" },
+                  planning: { backgroundColor: "#f59e0b", color: "white" },
                 }}
               />
               <div className="mt-4 space-y-2">
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                  <span className="text-sm text-gray-600">Submitted</span>
+                  <span className="text-sm text-gray-600">Executed</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-amber-500 rounded-full"></div>
+                  <span className="text-sm text-gray-600">Planning</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 bg-gray-200 rounded-full"></div>
@@ -356,6 +489,30 @@ export default function EngineerCalendar() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
+              {/* Status Selection */}
+              <div className="space-y-2">
+                <Label htmlFor="status">Activity Status</Label>
+                <Select
+                  value={activityData.status}
+                  onValueChange={(value: 'planning' | 'executed') =>
+                    setActivityData((prev) => ({ ...prev, status: value }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="planning">Planning</SelectItem>
+                    <SelectItem value="executed">Executed</SelectItem>
+                  </SelectContent>
+                </Select>
+                {activityData.status === 'planning' && (
+                  <p className="text-sm text-amber-600">
+                    This will be saved as a planned activity. Change to "Executed" once completed.
+                  </p>
+                )}
+              </div>
+
               {/* Customer and Site Information */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -498,13 +655,59 @@ export default function EngineerCalendar() {
                   className="flex items-center gap-2"
                 >
                   <Save className="h-4 w-4" />
-                  {loading ? "Saving..." : "Save Activity"}
+                  {loading ? "Saving..." : activityData.status === 'planning' ? "Save Planning" : "Save Activity"}
                 </Button>
               </div>
             </CardContent>
           </Card>
         </div>
       </div>
+
+      {/* Notifications Dialog */}
+      <Dialog open={showNotifications} onOpenChange={setShowNotifications}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center justify-between">
+              <span>Notifications</span>
+              {unreadCount > 0 && (
+                <Button variant="ghost" size="sm" onClick={markAllAsRead}>
+                  Mark all as read
+                </Button>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              Messages from your admin team
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {notifications.length === 0 ? (
+              <p className="text-center text-gray-500 py-8">No notifications yet</p>
+            ) : (
+              notifications.map((notification) => (
+                <Card 
+                  key={notification.id} 
+                  className={`p-4 cursor-pointer transition-colors ${
+                    !notification.is_read ? 'bg-blue-50 border-blue-200' : ''
+                  }`}
+                  onClick={() => !notification.is_read && markNotificationAsRead(notification.id)}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <p className="text-sm">{notification.message}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {format(new Date(notification.created_at), "MMM d, yyyy 'at' h:mm a")}
+                      </p>
+                    </div>
+                    {!notification.is_read && (
+                      <Badge className="bg-blue-500">New</Badge>
+                    )}
+                  </div>
+                </Card>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

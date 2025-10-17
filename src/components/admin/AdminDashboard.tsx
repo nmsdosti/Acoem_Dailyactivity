@@ -53,6 +53,8 @@ import { supabase } from "../../../supabase/supabase";
 import { useToast } from "@/components/ui/use-toast";
 import { EngineerManagement } from "./EngineerManagement";
 import { ActivityAnalytics } from "./ActivityAnalytics";
+import { AdminCalendarView } from "./AdminCalendarView";
+import { AdminMessaging } from "./AdminMessaging";
 import { useAuth } from "../../../supabase/auth";
 
 interface Engineer {
@@ -206,6 +208,9 @@ export default function AdminDashboard() {
 
   const applyFilters = () => {
     let filtered = [...activities];
+
+    // Filter out planning activities - only show executed
+    filtered = filtered.filter(activity => activity.status === 'executed');
 
     if (filters.engineer_id && filters.engineer_id !== "all") {
       filtered = filtered.filter(
@@ -433,8 +438,10 @@ export default function AdminDashboard() {
 
         {/* Main Content Tabs */}
         <Tabs defaultValue="activities" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="activities">Activity Submissions</TabsTrigger>
+            <TabsTrigger value="calendar">Calendar View</TabsTrigger>
+            <TabsTrigger value="messaging">Messaging</TabsTrigger>
             <TabsTrigger value="engineers">Engineer Management</TabsTrigger>
             <TabsTrigger value="analytics">Analytics</TabsTrigger>
           </TabsList>
@@ -653,6 +660,14 @@ export default function AdminDashboard() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="calendar">
+            <AdminCalendarView engineers={engineers} />
+          </TabsContent>
+
+          <TabsContent value="messaging">
+            <AdminMessaging engineers={engineers} />
           </TabsContent>
 
           <TabsContent value="engineers">

@@ -69,6 +69,7 @@ export type Database = {
           period_end_date: string | null
           period_start_date: string | null
           site_location: string | null
+          status: string | null
           submitted_at: string | null
           total_hours: number | null
           updated_at: string | null
@@ -85,6 +86,7 @@ export type Database = {
           period_end_date?: string | null
           period_start_date?: string | null
           site_location?: string | null
+          status?: string | null
           submitted_at?: string | null
           total_hours?: number | null
           updated_at?: string | null
@@ -101,6 +103,7 @@ export type Database = {
           period_end_date?: string | null
           period_start_date?: string | null
           site_location?: string | null
+          status?: string | null
           submitted_at?: string | null
           total_hours?: number | null
           updated_at?: string | null
@@ -153,6 +156,47 @@ export type Database = {
           weekly_hour_requirement?: number | null
         }
         Relationships: []
+      }
+      notifications: {
+        Row: {
+          created_at: string | null
+          id: string
+          is_read: boolean | null
+          message: string
+          recipient_engineer_id: string | null
+          recipient_type: string
+          sent_at: string | null
+          sent_by: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          is_read?: boolean | null
+          message: string
+          recipient_engineer_id?: string | null
+          recipient_type: string
+          sent_at?: string | null
+          sent_by?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          is_read?: boolean | null
+          message?: string
+          recipient_engineer_id?: string | null
+          recipient_type?: string
+          sent_at?: string | null
+          sent_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notifications_recipient_engineer_id_fkey"
+            columns: ["recipient_engineer_id"]
+            isOneToOne: false
+            referencedRelation: "engineers"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       service_categories: {
         Row: {
